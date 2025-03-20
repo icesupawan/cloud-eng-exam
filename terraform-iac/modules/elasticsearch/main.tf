@@ -21,14 +21,14 @@ resource "aws_security_group" "elasticsearch" {
     from_port   = 9200
     to_port     = 9200
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   ingress {
     from_port   = 9300
     to_port     = 9300
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   egress {
@@ -46,11 +46,11 @@ resource "aws_launch_template" "data_nodes" {
   key_name      = var.key_name
 
   block_device_mappings {
-    device_name = "/dev/sdb" # The device name inside the instance
+    device_name = "/dev/sdb"
     ebs {
-      volume_size           = 100 # Size in GB (Adjust as needed)
+      volume_size           = 100
       volume_type           = "gp3"
-      delete_on_termination = true # Set to false if you need persistent storage
+      delete_on_termination = true 
       encrypted             = true
     }
   }
@@ -118,7 +118,6 @@ resource "aws_launch_template" "data_nodes" {
   )
 }
 
-# Auto Scaling Group
 resource "aws_autoscaling_group" "data_nodes" {
   desired_capacity     = var.desired_capacity
   min_size            = var.min_size
@@ -130,53 +129,6 @@ resource "aws_autoscaling_group" "data_nodes" {
     version = "$Latest"
   }
 }
-# resource "aws_ebs_volume" "data_node_volumes" {
-#   count             = 4  # Number of data nodes
-#   availability_zone = element(["ap-southeast-1a", "ap-southeast-1b", "ap-southeast-1c"], count.index)
-#   size             = 100 # Adjust based on data storage needs (100GB)
-#   type             = "gp3"
-#   tags = {
-#     Name = "elasticsearch-data-volume-${count.index}"
-#   }
-# }
-# resource "aws_volume_attachment" "data_node_attachment" {
-#   count       = 4
-#   device_name = "/dev/sdb"
-#   volume_id   = aws_ebs_volume.data_node_volumes[count.index].id
-#   instance_id = data.aws_instances.data_node_instances.ids[count.index]
-# }
-
-# resource "aws_ebs_volume" "master_node_volumes" {
-#   count             = 3  # Number of master nodes
-#   availability_zone = element(["ap-southeast-1a", "ap-southeast-1b", "ap-southeast-1c"], count.index)
-#   size             = 20 # Smaller volume (20GB) since it only stores cluster state
-#   type             = "gp3"
-#   tags = {
-#     Name = "elasticsearch-master-volume-${count.index}"
-#   }
-# }
-# # Fetch instances in the Auto Scaling Group for Data Nodes
-# data "aws_instances" "data_node_instances" {
-#   filter {
-#     name   = "tag:aws:autoscaling:groupName"
-#     values = [aws_autoscaling_group.data_nodes.name]
-#   }
-# }
-
-# # Fetch instances in the Auto Scaling Group for Master Nodes
-# data "aws_instances" "master_node_instances" {
-#   filter {
-#     name   = "tag:aws:autoscaling:groupName"
-#     values = [aws_autoscaling_group.master_nodes.name]
-#   }
-# }
-
-# resource "aws_volume_attachment" "master_node_attachment" {
-#   count       = 3
-#   device_name = "/dev/sdb"
-#   volume_id   = aws_ebs_volume.master_node_volumes[count.index].id
-#   instance_id = data.aws_instances.master_node_instances.ids[count.index]
-# }
 
 resource "aws_launch_template" "master_nodes" {
   name_prefix   = "${var.name}-es-master"
@@ -185,11 +137,11 @@ resource "aws_launch_template" "master_nodes" {
   key_name      = var.key_name
 
   block_device_mappings {
-    device_name = "/dev/sdb" # The device name inside the instance
+    device_name = "/dev/sdb" 
     ebs {
-      volume_size           = 100 # Size in GB (Adjust as needed)
+      volume_size           = 100 
       volume_type           = "gp3"
-      delete_on_termination = true # Set to false if you need persistent storage
+      delete_on_termination = true
       encrypted             = true
     }
   }
@@ -203,7 +155,7 @@ resource "aws_launch_template" "master_nodes" {
               #!/bin/bash
               set -ex
               sudo apt update -y
-              sudo apt install -y openjdk-11-jdk
+              sudo apt install -y openjdk-11-jdk amazon-cloudwatch-agent filebeat
 
               # Ensure EBS is mounted
               if [ -b /dev/sdb ]; then
@@ -212,10 +164,50 @@ resource "aws_launch_template" "master_nodes" {
                 sudo mount /dev/sdb /var/lib/elasticsearch
                 echo "/dev/sdb /var/lib/elasticsearch ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
               fi
-              EOF
-  ) # Ensures EBS is formatted and mounted on instance startup
-}
 
+              # Configure CloudWatch Agent
+              cat <<EOT > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+              {
+                "agent": {
+                  "metrics_collection_interval": 60,
+                  "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
+                },
+                "metrics": {
+                  "namespace": "Elasticsearch",
+                  "metrics_collected": {
+                    "disk": {
+                      "measurement": ["used_percent"],
+                      "resources": ["*"],
+                      "ignore_file_system_types": ["sysfs", "tmpfs"]
+                    },
+                    "mem": {
+                      "measurement": ["mem_used_percent"]
+                    },
+                    "cpu": {
+                      "measurement": ["cpu_usage_idle"],
+                      "totalcpu": true
+                    }
+                  }
+                }
+              }
+              EOT
+              sudo systemctl enable amazon-cloudwatch-agent
+              sudo systemctl start amazon-cloudwatch-agent
+
+              # Configure Filebeat for Elasticsearch logs
+              sudo tee /etc/filebeat/filebeat.yml > /dev/null <<EOL
+              filebeat.inputs:
+                - type: log
+                  paths:
+                    - /var/log/elasticsearch/*.log
+              output.logstash:
+                hosts: ["logstash-endpoint"]
+              EOL
+              sudo systemctl enable filebeat
+              sudo systemctl start filebeat
+              EOF
+  )
+}
 resource "aws_autoscaling_group" "master_nodes" {
   desired_capacity     = 1  # Reduce this value
   max_size            = 3  # Adjust as needed

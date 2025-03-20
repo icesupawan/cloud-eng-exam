@@ -2,8 +2,8 @@ cluster.name: "{{ es_cluster_name }}"
 node.name: "{{ inventory_hostname }}"
 path.data: "{{ es_data_path }}"
 path.logs: "{{ es_logs_path }}"
-#network.host: "{{ ansible_host }}"
-network.host: "0.0.0.0"
+network.host: "{{ ansible_host }}"
+#network.host: "0.0.0.0"
 discovery.seed_hosts: {{ groups['all_nodes'] | map('extract', hostvars, 'ansible_host') | list }}
 cluster.initial_master_nodes: {{ groups['elasticsearch_master'] | map('extract', hostvars, 'node_name') | list }}
 
