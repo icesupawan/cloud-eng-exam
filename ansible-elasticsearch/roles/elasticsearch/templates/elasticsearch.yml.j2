@@ -1,0 +1,24 @@
+cluster.name: "{{ es_cluster_name }}"
+node.name: "{{ inventory_hostname }}"
+path.data: "{{ es_data_path }}"
+path.logs: "{{ es_logs_path }}"
+#network.host: "{{ ansible_host }}"
+network.host: "0.0.0.0"
+discovery.seed_hosts: {{ groups['all_nodes'] | map('extract', hostvars, 'ansible_host') | list }}
+cluster.initial_master_nodes: {{ groups['elasticsearch_master'] | map('extract', hostvars, 'node_name') | list }}
+
+# Master-eligible setting
+node.roles: {% if 'elasticsearch_master' in group_names %}["master"]{% else %}["data"]{% endif %}
+
+# Security settings
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: true
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.verification_mode: certificate
+# Keystore settings (Use `node.p12` as the keystore)
+xpack.security.transport.ssl.keystore.path: "/etc/elasticsearch/certs/node.p12"
+xpack.security.transport.ssl.keystore.secure_password: "Elastic123!"
+
+# Truststore settings (Use `truststore.p12`)
+xpack.security.transport.ssl.truststore.path: "/etc/elasticsearch/certs/truststore.p12"
+xpack.security.transport.ssl.truststore.secure_password: "Elastic123!"

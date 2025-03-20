@@ -1,0 +1,58 @@
+- name: Format and mount EBS volume (Data Nodes Only)
+  when: "'elasticsearch_data' in group_names"
+  block:
+    - name: Detect EBS Volume (excluding root disk)
+      shell: |
+        lsblk -nr -o NAME,MOUNTPOINT,FSTYPE | awk '$2 == "" && $1 ~ /^nvme[1-9]n1$/ {print "/dev/" $1}'
+      register: volume_check
+      changed_when: false
+
+    - name: Set EBS device name dynamically
+      set_fact:
+        ebs_device: "{{ volume_check.stdout_lines[0] | default('/dev/nvme1n1') }}"
+
+    - name: Debug - Show detected EBS device
+      debug:
+        msg: "Using EBS device: {{ ebs_device }}"
+
+    - name: Check if EBS volume is already formatted
+      shell: blkid {{ ebs_device }}
+      register: blkid_check
+      changed_when: false
+      failed_when: blkid_check.rc not in [0, 2]
+
+    - name: Format EBS volume if unformatted
+      shell: mkfs.ext4 {{ ebs_device }}
+      when: "'ext4' not in blkid_check.stdout"
+
+    - name: Create mount directory
+      file:
+        path: /var/lib/elasticsearch
+        state: directory
+        mode: '0777'
+
+    - name: Get UUID of EBS volume
+      shell: blkid -o value -s UUID {{ ebs_device }}
+      register: ebs_uuid
+      changed_when: false
+
+    - name: Debug - Show detected UUID
+      debug:
+        msg: "EBS UUID: {{ ebs_uuid.stdout }}"
+
+    - name: Check if volume is already mounted
+      shell: mount | grep /var/lib/elasticsearch
+      register: mount_check
+      changed_when: false
+      failed_when: mount_check.rc not in [0, 1]
+
+    - name: Mount the EBS volume if not already mounted
+      shell: mount {{ ebs_device }} /var/lib/elasticsearch
+      when: mount_check.rc == 1  # Mount only if not already mounted
+
+    - name: Ensure mount persists on reboot
+      lineinfile:
+        path: /etc/fstab
+        line: "UUID={{ ebs_uuid.stdout }} /var/lib/elasticsearch ext4 defaults,nofail 0 2"
+        state: present
+

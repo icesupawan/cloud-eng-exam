@@ -1,0 +1,9 @@
+- name: Elasticsearch Cluster Deployment
+  hosts: all_nodes
+  vars_files:
+    - secrets.yml
+  become: true
+  roles:
+    - setup_ebs
+    - elasticsearch
+    - security

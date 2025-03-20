@@ -1,0 +1,115 @@
+- name: Ensure certificate directory exists
+  file:
+    path: "{{ cert_dir }}"
+    state: directory
+    mode: "0750"
+    owner: elasticsearch
+    group: elasticsearch
+
+- name: Remove existing certificates if they exist
+  file:
+    path: "{{ cert_dir }}"
+    state: absent
+
+- name: Recreate certificate directory
+  file:
+    path: "{{ cert_dir }}"
+    state: directory
+    mode: "0750"
+    owner: elasticsearch
+    group: elasticsearch
+
+- name: Generate Elasticsearch Certificate Authority (CA)
+  command: >
+    /usr/share/elasticsearch/bin/elasticsearch-certutil ca --out {{ cert_dir }}/ca.p12 --pass "{{ cert_password }}"
+  args:
+    creates: "{{ cert_dir }}/ca.p12"
+
+- name: Verify CA file with keytool
+  command: >
+    keytool -list -keystore {{ cert_dir }}/ca.p12 -storepass "{{ cert_password }}"
+  register: ca_list_output
+  changed_when: false
+  ignore_errors: true
+
+- name: Set permissions for CA file
+  file:
+    path: "{{ cert_dir }}/ca.p12"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0640"
+
+- name: Export CA certificate to PEM format
+  shell: >
+    keytool -exportcert -keystore {{ cert_dir }}/ca.p12 -storepass "{{ cert_password }}"
+    -alias "ca" -rfc > {{ cert_dir }}/ca.pem
+  args:
+    creates: "{{ cert_dir }}/ca.pem"
+
+- name: Set permissions for CA PEM file
+  file:
+    path: "{{ cert_dir }}/ca.pem"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0640"
+
+- name: Generate node certificate (With Password)
+  command: >
+    /usr/share/elasticsearch/bin/elasticsearch-certutil cert --silent --ca {{ cert_dir }}/ca.p12 --ca-pass "{{ cert_password }}" --out {{ cert_dir }}/node.p12 --pass "{{ cert_password }}"
+  args:
+    creates: "{{ cert_dir }}/node.p12"
+  become: true
+
+- name: Set permissions for node cert
+  file:
+    path: "{{ cert_dir }}/node.p12"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0640"
+
+- name: Generate truststore from CA certificate
+  shell: >
+    echo "yes" | keytool -import -alias elastic-ca -file {{ cert_dir }}/ca.pem
+    -keystore {{ cert_dir }}/truststore.p12 -storetype PKCS12 -storepass "{{ cert_password }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ cert_dir }}/truststore.p12"
+  register: truststore_creation
+  ignore_errors: true
+
+- name: Set permissions for truststore
+  file:
+    path: "{{ cert_dir }}/truststore.p12"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0640"
+
+- name: Verify Truststore with keytool
+  command: >
+    keytool -list -keystore {{ cert_dir }}/truststore.p12 -storetype PKCS12 -storepass "{{ cert_password }}"
+  register: truststore_list_output
+  changed_when: false
+  ignore_errors: true
+
+- name: Overwrite existing truststore password
+  shell: |
+    echo "y" | /usr/share/elasticsearch/bin/elasticsearch-keystore remove xpack.security.http.ssl.truststore.secure_password
+    echo "{{ cert_password }}" | /usr/share/elasticsearch/bin/elasticsearch-keystore add xpack.security.http.ssl.truststore.secure_password --stdin
+  args:
+    executable: /bin/bash
+  become: true
+
+- name: Overwrite existing keystore password
+  shell: |
+    echo "y" | /usr/share/elasticsearch/bin/elasticsearch-keystore remove xpack.security.http.ssl.keystore.secure_password
+    echo "{{ cert_password }}" | /usr/share/elasticsearch/bin/elasticsearch-keystore add xpack.security.http.ssl.keystore.secure_password --stdin
+  args:
+    executable: /bin/bash
+  become: true
+
+- name: Restart Elasticsearch after updating keystore
+  systemd:
+    name: elasticsearch
+    state: restarted
+    enabled: yes
+  become: true
