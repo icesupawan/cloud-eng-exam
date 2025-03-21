@@ -11,8 +11,10 @@ resource "aws_elasticache_replication_group" "redis" {
   parameter_group_name       = var.parameter_group_name
   engine_version             = var.engine_version
   port                       = var.redis_port
-  automatic_failover_enabled = var.automatic_failover_enabled
+  automatic_failover_enabled = var.automatic_failover_enabled #HA
   multi_az_enabled           = var.multi_az_enabled
+  # num_node_groups            = 3 #The number of node groups (shards) on the global replication group.
+  # replicas_per_node_group    = 2 #replica in each shard (1for primary other for secondary) 
   subnet_group_name          = aws_elasticache_subnet_group.redis_subnet_group.name
   security_group_ids         = var.security_group_id
   snapshot_retention_limit   = var.snapshot_retention_limit

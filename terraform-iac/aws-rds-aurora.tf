@@ -6,8 +6,8 @@ module "rds_aurora" {
   engine                = "aurora-postgresql"
   engine_version        = "14.6"
   instance_class        = "db.r6g.large"
+  read_replica_count    = 2
   vpc_security_group_ids = [module.redis_sg.sg_id]
-  # Backup settings
   backup_retention_period = 7
   security_group_id = module.rds_aurora_sg.sg_id
   subnet_ids = module.vpc.private_db_subnet_ids

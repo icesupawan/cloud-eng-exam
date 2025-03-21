@@ -12,3 +12,6 @@ variable "backup_retention_period" {
   default = 7
 }
 
+variable "read_replica_count" {
+  type = string
+}

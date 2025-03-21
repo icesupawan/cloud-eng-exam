@@ -7,7 +7,7 @@ locals {
 data "aws_secretsmanager_secret_version" "database_secret" {
   secret_id = "arn:aws:secretsmanager:ap-southeast-1:${var.account_id}:secret:cloud-eng-exam"
 }
-
+data "aws_availability_zones" "available" {}
 resource "aws_rds_cluster" "db_cluster" {
   cluster_identifier                  = var.cluster_identifier
   engine                              = var.engine
@@ -35,9 +35,9 @@ resource "aws_rds_cluster" "db_cluster" {
   performance_insights_enabled          = true
   performance_insights_retention_period = 7
 }
-
 resource "aws_rds_cluster_instance" "db_cluster_instances" {
-  identifier                            = var.cluster_identifier
+  count                                 = var.read_replica_count + 1
+  identifier                            = "${var.cluster_identifier}-instance-${count.index}"
   cluster_identifier                    = aws_rds_cluster.db_cluster.id
   engine                                = aws_rds_cluster.db_cluster.engine
   engine_version                        = aws_rds_cluster.db_cluster.engine_version
@@ -53,8 +53,8 @@ resource "aws_rds_cluster_instance" "db_cluster_instances" {
   monitoring_role_arn                   = aws_iam_role.rds_monitoring_role.arn
   monitoring_interval                   = 60
   copy_tags_to_snapshot                 = true
+  availability_zone = element(data.aws_availability_zones.available.names, count.index)
 }
-
 
 resource "aws_rds_cluster_parameter_group" "rds_cluster_parameter_group" {
   name   = "${var.cluster_identifier}-cluter-parameter-group"
@@ -146,48 +146,29 @@ resource "aws_iam_role" "rds_monitoring_role" {
   managed_policy_arns = ["arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"]
 }
 
-# resource "aws_iam_role" "argos_service_update_db_task_role" {
-#   name               = "argos-service-update-db-task-role-${var.env}"
-#   assume_role_policy = <<EOF
-# {
-#  "Version": "2012-10-17",
-#  "Statement": [
-#     {
-#      "Action": "sts:AssumeRole",
-#      "Principal": {
-#        "Service": "ecs-tasks.amazonaws.com"
-#      },
-#      "Effect": "Allow",
-#      "Sid": ""
-#     }
-#  ]
-# }
-# EOF
-#   tags               = local.tags_argos_service_update_db
-# }
+resource "aws_appautoscaling_target" "aurora_read_replica_target" {
+  count              = var.read_replica_count > 0 ? 1 : 0
+  max_capacity       = 5
+  min_capacity       = 1
+  resource_id        = "cluster:${aws_rds_cluster.db_cluster.cluster_identifier}"
+  scalable_dimension = "rds:cluster:ReadReplicaCount"
+  service_namespace  = "rds"
+}
 
-# resource "aws_iam_policy" "argos_service_update_db_task_role_policy" {
-#   name   = "argos-service-update-db-TaskRole-policy-${var.env}"
-#   policy = <<EOF
-# {
-#     "Version": "2012-10-17",
-#     "Statement": [
-#         {
-#             "Action": [
-#                 "secretsmanager:GetSecretValue"
-#             ],
-#             "Resource": [
-#                 "arn:aws:secretsmanager:ap-southeast-1:${var.account_id}:secret:/${var.env}/*"
-#             ],
-#             "Effect": "Allow"
-#         }
-#     ]
-# }
-# EOF
-#   tags   = local.tags_argos_service_update_db
-# }
+resource "aws_appautoscaling_policy" "aurora_read_replica_scaling_policy" {
+  count              = var.read_replica_count > 0 ? 1 : 0
+  name               = "${var.cluster_identifier}-replica-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.aurora_read_replica_target[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.aurora_read_replica_target[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.aurora_read_replica_target[0].service_namespace
 
-# resource "aws_iam_role_policy_attachment" "argos_service_update_db_policy_attachment" {
-#   role       = aws_iam_role.argos_service_update_db_task_role.name
-#   policy_arn = aws_iam_policy.argos_service_update_db_task_role_policy.arn
-# }
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "RDSReaderAverageCPUUtilization"
+    }
+    target_value       = 70.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 300
+  }
+}

@@ -13,32 +13,6 @@ data "aws_ami" "latest_ubuntu" {
     values = ["x86_64"]
   }
 }
-resource "aws_security_group" "elasticsearch" {
-  name_prefix = "elasticsearch-sg"
-  vpc_id      = var.vpc_id
-
-  ingress {
-    from_port   = 9200
-    to_port     = 9200
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-
-  ingress {
-    from_port   = 9300
-    to_port     = 9300
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
 resource "aws_launch_template" "data_nodes" {
   name_prefix   = "${var.name}-es-data"
   image_id      = data.aws_ami.latest_ubuntu.id
@@ -57,7 +31,7 @@ resource "aws_launch_template" "data_nodes" {
 
   network_interfaces {
     associate_public_ip_address = true
-    security_groups             = [aws_security_group.elasticsearch.id]
+    security_groups             = [var.security_group_id]
   }
 
   user_data = base64encode(<<-EOF
@@ -66,7 +40,6 @@ resource "aws_launch_template" "data_nodes" {
               sudo apt update -y
               sudo apt install -y openjdk-11-jdk amazon-cloudwatch-agent filebeat
 
-              # Ensure EBS is mounted
               if [ -b /dev/sdb ]; then
                 sudo mkfs -t ext4 /dev/sdb
                 sudo mkdir -p /var/lib/elasticsearch
@@ -74,46 +47,20 @@ resource "aws_launch_template" "data_nodes" {
                 echo "/dev/sdb /var/lib/elasticsearch ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
               fi
 
-              # Configure CloudWatch Agent
               cat <<EOT > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
               {
-                "agent": {
-                  "metrics_collection_interval": 60,
-                  "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
-                },
                 "metrics": {
                   "namespace": "Elasticsearch",
                   "metrics_collected": {
-                    "disk": {
-                      "measurement": ["used_percent"],
-                      "resources": ["*"],
-                      "ignore_file_system_types": ["sysfs", "tmpfs"]
-                    },
-                    "mem": {
-                      "measurement": ["mem_used_percent"]
-                    },
-                    "cpu": {
-                      "measurement": ["cpu_usage_idle"],
-                      "totalcpu": true
-                    }
+                    "disk": { "measurement": ["used_percent"], "resources": ["*"] },
+                    "mem": { "measurement": ["mem_used_percent"] },
+                    "cpu": { "measurement": ["cpu_usage_idle"], "totalcpu": true }
                   }
                 }
               }
               EOT
               sudo systemctl enable amazon-cloudwatch-agent
               sudo systemctl start amazon-cloudwatch-agent
-
-              # Configure Filebeat for Elasticsearch logs
-              sudo tee /etc/filebeat/filebeat.yml > /dev/null <<EOL
-              filebeat.inputs:
-                - type: log
-                  paths:
-                    - /var/log/elasticsearch/*.log
-              output.logstash:
-                hosts: ["logstash-endpoint"]
-              EOL
-              sudo systemctl enable filebeat
-              sudo systemctl start filebeat
               EOF
   )
 }
@@ -148,7 +95,7 @@ resource "aws_launch_template" "master_nodes" {
 
   network_interfaces {
     associate_public_ip_address = true
-    security_groups             = [aws_security_group.elasticsearch.id]
+    security_groups             = [var.security_group_id]
   }
 
   user_data = base64encode(<<-EOF
@@ -157,7 +104,7 @@ resource "aws_launch_template" "master_nodes" {
               sudo apt update -y
               sudo apt install -y openjdk-11-jdk amazon-cloudwatch-agent filebeat
 
-              # Ensure EBS is mounted
+              # Mount EBS สำหรับเก็บข้อมูล
               if [ -b /dev/sdb ]; then
                 sudo mkfs -t ext4 /dev/sdb
                 sudo mkdir -p /var/lib/elasticsearch
@@ -165,53 +112,28 @@ resource "aws_launch_template" "master_nodes" {
                 echo "/dev/sdb /var/lib/elasticsearch ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
               fi
 
-              # Configure CloudWatch Agent
+              # ติดตั้ง CloudWatch Agent
               cat <<EOT > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
               {
-                "agent": {
-                  "metrics_collection_interval": 60,
-                  "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
-                },
                 "metrics": {
                   "namespace": "Elasticsearch",
                   "metrics_collected": {
-                    "disk": {
-                      "measurement": ["used_percent"],
-                      "resources": ["*"],
-                      "ignore_file_system_types": ["sysfs", "tmpfs"]
-                    },
-                    "mem": {
-                      "measurement": ["mem_used_percent"]
-                    },
-                    "cpu": {
-                      "measurement": ["cpu_usage_idle"],
-                      "totalcpu": true
-                    }
+                    "disk": { "measurement": ["used_percent"], "resources": ["*"] },
+                    "mem": { "measurement": ["mem_used_percent"] },
+                    "cpu": { "measurement": ["cpu_usage_idle"], "totalcpu": true }
                   }
                 }
               }
               EOT
               sudo systemctl enable amazon-cloudwatch-agent
               sudo systemctl start amazon-cloudwatch-agent
-
-              # Configure Filebeat for Elasticsearch logs
-              sudo tee /etc/filebeat/filebeat.yml > /dev/null <<EOL
-              filebeat.inputs:
-                - type: log
-                  paths:
-                    - /var/log/elasticsearch/*.log
-              output.logstash:
-                hosts: ["logstash-endpoint"]
-              EOL
-              sudo systemctl enable filebeat
-              sudo systemctl start filebeat
               EOF
   )
 }
 resource "aws_autoscaling_group" "master_nodes" {
-  desired_capacity     = 1  # Reduce this value
-  max_size            = 3  # Adjust as needed
-  min_size            = 1
+  desired_capacity     = var.master_node_desired
+  max_size            = var.master_node_max
+  min_size            = var.master_node_min
   vpc_zone_identifier = var.subnet_ids
 
   launch_template {
@@ -222,7 +144,7 @@ resource "aws_autoscaling_group" "master_nodes" {
 # Network Load Balancer
 resource "aws_lb" "elasticsearch" {
   name               = var.elb_name
-  internal           = false
+  internal           = true
   load_balancer_type = "network"
   subnets            = var.subnet_ids
 }
@@ -244,6 +166,11 @@ resource "aws_lb_listener" "es_listener" {
     target_group_arn = aws_lb_target_group.es_tg.arn
   }
 }
+resource "aws_autoscaling_attachment" "es_tg_attachment" {
+  autoscaling_group_name = aws_autoscaling_group.data_nodes.id
+  lb_target_group_arn    = aws_lb_target_group.es_tg.arn
+}
+
 resource "aws_sns_topic" "es_alerts" {
   name = "Elasticsearch-Alerts"
 }
@@ -293,4 +220,13 @@ resource "aws_cloudwatch_metric_alarm" "node_failure" {
   alarm_description   = "Triggers when number of nodes in cluster is too low"
   actions_enabled     = true
   alarm_actions       = [aws_sns_topic.es_alerts.arn]
+}
+resource "aws_lambda_function" "es_health_check" {
+  function_name    = "ElasticsearchHealthCheck"
+  runtime         = "python3.8"
+  handler         = "lambda_function.lambda_handler"
+  role            = aws_iam_role.lambda_exec.arn
+
+  filename        = "lambda.zip"
+  source_code_hash = filebase64sha256("lambda.zip")
 }
